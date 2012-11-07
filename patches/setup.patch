@@ -1,0 +1,523 @@
+diff --git a/Documentation/spi/spidev_test.c b/Documentation/spi/spidev_test.c
+index 16feda9..97f047f 100755
+--- a/Documentation/spi/spidev_test.c
++++ b/Documentation/spi/spidev_test.c
+@@ -23,6 +23,8 @@
+ 
+ #define ARRAY_SIZE(a) (sizeof(a) / sizeof((a)[0]))
+ 
++#define SPI_NO_CS	0x40
++#define SPI_READY	0x80
+ static void pabort(const char *s)
+ {
+ 	perror(s);
+diff --git a/arch/arm/mach-s3c64xx/dev-spi.c b/arch/arm/mach-s3c64xx/dev-spi.c
+index 5e6b420..a3d6653 100755
+--- a/arch/arm/mach-s3c64xx/dev-spi.c
++++ b/arch/arm/mach-s3c64xx/dev-spi.c
+@@ -55,6 +55,7 @@ static int s3c64xx_spi_cfg_gpio(struct platform_device *pdev)
+ 		return -EINVAL;
+ 	}
+ 
++	//configure gpc 0~3 gpc 4~6 as function 2, spi function mode
+ 	s3c_gpio_cfgall_range(base, 3,
+ 			      S3C_GPIO_SFN(2), S3C_GPIO_PULL_UP);
+ 
+diff --git a/arch/arm/mach-s3c64xx/mach-smdk6410.c b/arch/arm/mach-s3c64xx/mach-smdk6410.c
+index 1e84ae7..b79ae73 100755
+--- a/arch/arm/mach-s3c64xx/mach-smdk6410.c
++++ b/arch/arm/mach-s3c64xx/mach-smdk6410.c
+@@ -86,6 +86,7 @@
+ //for spi  add by fatfish
+ #include <plat/s3c64xx-spi.h>
+ #include <linux/spi/spi.h>
++#include <linux/spi/flash.h>
+ 
+ //for mcp251x  add by fatfish
+ #include <linux/can/platform/mcp251x.h>
+@@ -191,8 +192,10 @@ static struct platform_device s3c_device_dm9000 = {
+ 
+ 
+ /*add by fatfish for mcp251x*/
++static int request_cs_gpio;
+ static void  cs_set_level(unsigned line_id, int lvl) {
+-    gpio_direction_output(line_id, lvl);
++ 	printk(KERN_INFO "SPI: cs set level\n");
++    	gpio_direction_output(line_id, lvl);
+ };
+ 
+ static struct s3c64xx_spi_csinfo s3c64xx_spi1_csinfo = {
+@@ -201,6 +204,25 @@ static struct s3c64xx_spi_csinfo s3c64xx_spi1_csinfo = {
+   	.set_level=cs_set_level,
+ };
+ 
++static void setup_pin_cs0(void)
++{
++	int ret;
++	ret = gpio_request(S3C64XX_GPC(3), "CS0");
++	if (ret) {
++		printk(KERN_ERR "SPI: Setup CS-Pin0 Error\n");
++	}
++	printk(KERN_INFO "SPI: Set output pin 3 enabled\n");
++	s3c_gpio_setpull(S3C64XX_GPC(3), S3C_GPIO_PULL_NONE);	// Manual chip select pin as used in 6410_set_cs
++	s3c_gpio_cfgpin(S3C64XX_GPC(3), S3C_GPIO_OUTPUT);		// Manual chip select pin as used in 6410_set_cs
++};
++
++static struct s3c64xx_spi_csinfo s3c64xx_spi0_csinfo = {
++  	.fb_delay=0x3,
++  	.line=S3C64XX_GPC(3),
++  	.set_level=cs_set_level,
++	.cfg_io = setup_pin_cs0,
++};
++
+ static int mcp251x_ioSetup(struct spi_device *spi)
+ {
+ 	printk(KERN_INFO "mcp251x: setup gpio pins CS and External Int\n");
+@@ -232,8 +254,25 @@ static struct spi_board_info __initdata forlinx6410_mc251x_info[]  = {
+ 	},
+ };
+ 
++struct flash_platform_data m25p32_data = {
++	.name 		= "spi-flash",
++	.type 		= "m25p32",
++	.parts		= NULL,
++	.nr_parts	= 0,
++};
+ 
+-
++static struct spi_board_info __initdata spi_eeprom[] = {
++	{
++		.modalias = "m25p32",	
++		.platform_data = &m25p32_data,
++		.irq = -1,
++		.max_speed_hz = 24*1000*1000,	
++		.bus_num = 0,
++		.chip_select = 0,
++		.mode = SPI_MODE_3,	
++		.controller_data=&s3c64xx_spi0_csinfo,
++	},
++};
+ 
+ /* framebuffer and LCD setup. */
+ 
+@@ -613,6 +652,9 @@ static struct platform_device *smdk6410_devices[] __initdata = {
+ #ifdef CONFIG_SMDK6410_SD_CH1
+ 	&s3c_device_hsmmc1,
+ #endif  */
++	/*add by fatfish*/
++	&s3c64xx_device_spi0,
++	&s3c64xx_device_spi1,
+ 
+ 	&s3c_device_hsmmc0,
+ 	&s3c_device_hsmmc1,
+@@ -672,8 +714,8 @@ static struct platform_device *smdk6410_devices[] __initdata = {
+ 	&s3c_device_keypad,
+ 
+ 	/*add by fatfish*/
+-	&s3c64xx_device_spi0,
+-	&s3c64xx_device_spi1,
++	//&s3c64xx_device_spi0,
++//	&s3c64xx_device_spi1,
+ };
+ 
+ #ifdef CONFIG_REGULATOR
+@@ -1137,9 +1179,12 @@ static void __init smdk6410_machine_init(void)
+ 	
+ 	s3c64xx_spi_set_info(0,0,1);
+ 	s3c64xx_spi_set_info(1,0,1);
++	//printk(KERN_INFO "SPI: Only Register Bus number 1, spidev for test\n");
+ 	spi_register_board_info(forlinx6410_mc251x_info,ARRAY_SIZE(forlinx6410_mc251x_info));
++	spi_register_board_info(spi_eeprom,ARRAY_SIZE(spi_eeprom));
+ 	samsung_keypad_set_platdata(&smdk6410_keypad_data);
+ 	platform_add_devices(smdk6410_devices, ARRAY_SIZE(smdk6410_devices));
++	printk(KERN_INFO "Adding SPI infomation, Check SPI register v8\n");
+ }
+ 
+ MACHINE_START(SMDK6410, "SMDK6410")
+diff --git a/arch/arm/plat-samsung/include/plat/s3c64xx-spi.h b/arch/arm/plat-samsung/include/plat/s3c64xx-spi.h
+index 4c16fa3..8b849ea 100755
+--- a/arch/arm/plat-samsung/include/plat/s3c64xx-spi.h
++++ b/arch/arm/plat-samsung/include/plat/s3c64xx-spi.h
+@@ -26,6 +26,7 @@ struct s3c64xx_spi_csinfo {
+ 	u8 fb_delay;
+ 	unsigned line;
+ 	void (*set_level)(unsigned line_id, int lvl);
++	void (*cfg_io)();
+ };
+ 
+ /**
+diff --git a/drivers/base/platform.c b/drivers/base/platform.c
+index 6040717..c6b8387 100755
+--- a/drivers/base/platform.c
++++ b/drivers/base/platform.c
+@@ -111,11 +111,11 @@ int platform_add_devices(struct platform_device **devs, int num)
+ 	int i, ret = 0;
+ 
+ 	for (i = 0; i < num; i++) {
++		//printk(KERN_INFO "S3c6410: Add Platform Device %s\n", devs[i]->name);
+ 		ret = platform_device_register(devs[i]);
+ 		if (ret) {
+ 			while (--i >= 0)
+ 				platform_device_unregister(devs[i]);
+-			break;
+ 		}
+ 	}
+ 
+@@ -281,8 +281,8 @@ int platform_device_add(struct platform_device *pdev)
+ 		}
+ 	}
+ 
+-	pr_debug("Registering platform device '%s'. Parent at %s\n",
+-		 dev_name(&pdev->dev), dev_name(pdev->dev.parent));
++	//printk(KERN_INFO "### S3c6410:Registering platform device '%s'. Parent at %s\n",
++		 //dev_name(&pdev->dev), dev_name(pdev->dev.parent));
+ 
+ 	ret = device_add(&pdev->dev);
+ 	if (ret == 0)
+diff --git a/drivers/mtd/devices/m25p80.c b/drivers/mtd/devices/m25p80.c
+index 35180e4..52b5bfb 100755
+--- a/drivers/mtd/devices/m25p80.c
++++ b/drivers/mtd/devices/m25p80.c
+@@ -773,6 +773,44 @@ static const struct spi_device_id m25p_ids[] = {
+ };
+ MODULE_DEVICE_TABLE(spi, m25p_ids);
+ 
++static spi_flash_loop_test(struct spi_device *spi)
++{
++	int			tmp;
++	u8			code = OPCODE_RDID;
++	u8			id[5];
++	u32			jedec;
++	int i, j;
++	ssize_t retval;
++	u8 code2 = OPCODE_RDSR;
++	u8 val = 0;
++
++	memset(id, sizeof(id), 0);
++	printk(KERN_INFO "SPI: spi_flash_loop_test \n");
++
++	for (i=0; i < 10; i++) {
++		tmp = spi_write_then_read(spi, &code, 1, id, 5);
++		if (tmp < 0) {
++			DEBUG(MTD_DEBUG_LEVEL0, "%s: error %d reading JEDEC ID\n",
++				dev_name(&spi->dev), tmp);
++		} else {
++			printk(KERN_INFO " JEDEC");
++			for (j=0; j<5; j++) {
++				printk(KERN_INFO "%x", id[j]);
++			}
++			printk("\n");
++		}
++	}
++
++	for (i=0; i < 5; i++) {
++		retval = spi_write_then_read(spi, &code2, 1, &val, 1);
++
++		if (retval < 0) {
++			printk(KERN_INFO "SPI: read error!\n");
++		}
++		printk(KERN_INFO "SPI: status %x\n", val);
++	}
++}
++
+ static const struct spi_device_id *__devinit jedec_probe(struct spi_device *spi)
+ {
+ 	int			tmp;
+@@ -786,7 +824,10 @@ static const struct spi_device_id *__devinit jedec_probe(struct spi_device *spi)
+ 	 * string for after vendor-specific data, after the three bytes
+ 	 * we use here.  Supporting some chips might require using it.
+ 	 */
++	memset(id, sizeof(id), 0);
++	printk(KERN_INFO "SPI: ### Probe spi id\n");
+ 	tmp = spi_write_then_read(spi, &code, 1, id, 5);
++	printk(KERN_INFO "SPI: ### Probe error? %d\n", tmp);
+ 	if (tmp < 0) {
+ 		DEBUG(MTD_DEBUG_LEVEL0, "%s: error %d reading JEDEC ID\n",
+ 			dev_name(&spi->dev), tmp);
+@@ -798,17 +839,21 @@ static const struct spi_device_id *__devinit jedec_probe(struct spi_device *spi)
+ 	jedec = jedec << 8;
+ 	jedec |= id[2];
+ 
++	jedec = 0x202016;
+ 	ext_jedec = id[3] << 8 | id[4];
++	ext_jedec = 0;
+ 
+ 	for (tmp = 0; tmp < ARRAY_SIZE(m25p_ids) - 1; tmp++) {
+ 		info = (void *)m25p_ids[tmp].driver_data;
+ 		if (info->jedec_id == jedec) {
+ 			if (info->ext_id != 0 && info->ext_id != ext_jedec)
+ 				continue;
++			spi_flash_loop_test(spi);
+ 			return &m25p_ids[tmp];
+ 		}
+ 	}
+ 	dev_err(&spi->dev, "unrecognized JEDEC id %06x\n", jedec);
++	//spi_flash_loop_test(spi);
+ 	return ERR_PTR(-ENODEV);
+ }
+ 
+@@ -833,6 +878,7 @@ static int __devinit m25p_probe(struct spi_device *spi)
+ 	 * a chip ID, try the JEDEC id commands; they'll work for most
+ 	 * newer chips, even if we don't recognize the particular chip.
+ 	 */
++	printk(KERN_INFO "SPI: Probe M25p32 chip flash\n");
+ 	data = spi->dev.platform_data;
+ 	if (data && data->type) {
+ 		const struct spi_device_id *plat_id;
+@@ -859,6 +905,7 @@ static int __devinit m25p_probe(struct spi_device *spi)
+ 		if (IS_ERR(jid)) {
+ 			return PTR_ERR(jid);
+ 		} else if (jid != id) {
++			printk(KERN_INFO "SPI: Force use worng JID\n");
+ 			/*
+ 			 * JEDEC knows better, so overwrite platform ID. We
+ 			 * can't trust partitions any longer, but we'll let
+@@ -1040,6 +1087,7 @@ static struct spi_driver m25p80_driver = {
+ 
+ static int __init m25p80_init(void)
+ {
++	printk(KERN_INFO "SPI: M25P80 Register\n");
+ 	return spi_register_driver(&m25p80_driver);
+ }
+ 
+diff --git a/drivers/net/can/mcp251x.c b/drivers/net/can/mcp251x.c
+index e6bdb70..665674b 100755
+--- a/drivers/net/can/mcp251x.c
++++ b/drivers/net/can/mcp251x.c
+@@ -980,9 +980,9 @@ static int __devinit mcp251x_can_probe(struct spi_device *spi)
+ 	struct mcp251x_platform_data *pdata = spi->dev.platform_data;
+ 	int ret = -ENODEV;
+ 
+-	printk("\n@@@@@@@@@@@@@@@@@@@@\n");
+-	printk("mcp251x probe 1111111111111111");
+-	printk("\n@@@@@@@@@@@@@@@@@@@@\n");
++	printk(KERN_INFO "\n@@@@@@@@@@@@@@@@@@@@\n");
++	printk(KERN_INFO "mcp251x probe 1111111111111111");
++	printk(KERN_INFO "\n@@@@@@@@@@@@@@@@@@@@\n");
+ 
+ 	if (!pdata)
+ 		/* Platform data is required for osc freq */
+diff --git a/drivers/spi/spi.c b/drivers/spi/spi.c
+index dae7739..bd8fb20 100755
+--- a/drivers/spi/spi.c
++++ b/drivers/spi/spi.c
+@@ -455,6 +455,7 @@ static void spi_match_master_to_boardinfo(struct spi_master *master,
+ 	if (master->bus_num != bi->bus_num)
+ 		return;
+ 
++	printk(KERN_INFO "###SPI: add new spi device %s on master bus %d\n", bi->modalias, master->bus_num);
+ 	dev = spi_new_device(master, bi);
+ 	if (!dev)
+ 		dev_err(master->dev.parent, "can't create new device for %s\n",
+@@ -619,6 +620,7 @@ int spi_register_master(struct spi_master *master)
+ 		goto done;
+ 	dev_dbg(dev, "registered master %s%s\n", dev_name(&master->dev),
+ 			dynamic ? " (dynamic)" : "");
++	printk(KERN_INFO "#### SPI: Register Master\n");
+ 
+ 	mutex_lock(&board_lock);
+ 	list_add_tail(&master->list, &spi_master_list);
+diff --git a/drivers/spi/spi_s3c64xx.c b/drivers/spi/spi_s3c64xx.c
+index 17023b4..5ee7991 100755
+--- a/drivers/spi/spi_s3c64xx.c
++++ b/drivers/spi/spi_s3c64xx.c
+@@ -24,6 +24,7 @@
+ #include <linux/delay.h>
+ #include <linux/clk.h>
+ #include <linux/dma-mapping.h>
++#define DEBUG	1
+ #include <linux/platform_device.h>
+ #include <linux/spi/spi.h>
+ 
+@@ -310,6 +311,7 @@ static inline void enable_cs(struct s3c64xx_spi_driver_data *sdd,
+ {
+ 	struct s3c64xx_spi_csinfo *cs;
+ 
++	printk(KERN_INFO "SPI: Enable CS, High First, Low Then\n");
+ 	if (sdd->tgl_spi != NULL) { /* If last device toggled after mssg */
+ 		if (sdd->tgl_spi != spi) { /* if last mssg on diff device */
+ 			/* Deselect the last toggled device */
+@@ -613,6 +615,7 @@ static void handle_msg(struct s3c64xx_spi_driver_data *sdd,
+ 	u32 speed;
+ 	u8 bpw;
+ 
++	printk(KERN_INFO "SPI: Handle message in SPI controller\n");
+ 	/* If Master's(controller) state differs from that needed by Slave */
+ 	if (sdd->cur_speed != spi->max_speed_hz
+ 			|| sdd->cur_mode != spi->mode
+@@ -851,6 +854,9 @@ static int s3c64xx_spi_setup(struct spi_device *spi)
+ 		return -ENODEV;
+ 	}
+ 
++	if (cs->cfg_io)
++		cs->cfg_io();
++
+ 	sdd = spi_master_get_devdata(spi->master);
+ 	sci = sdd->cntrlr_info;
+ 
+@@ -930,6 +936,7 @@ static void s3c64xx_spi_hwinit(struct s3c64xx_spi_driver_data *sdd, int channel)
+ 	void __iomem *regs = sdd->regs;
+ 	unsigned int val;
+ 
++	printk(KERN_INFO "#### SPI: HW initialize...\n");
+ 	sdd->cur_speed = 0;
+ 
+ 	S3C64XX_SPI_DEACT(sdd);
+@@ -965,9 +972,9 @@ static int __init s3c64xx_spi_probe(struct platform_device *pdev)
+ 	struct s3c64xx_spi_info *sci;
+ 	struct spi_master *master;
+ 	int ret;
+-		printk("\n@@@@@@@@@@@@@@@@@@@@\n");
+-	printk("s3c64xx_spi_probe 1111111111111111");
+-	printk("\n@@@@@@@@@@@@@@@@@@@@\n");
++	printk(KERN_INFO "\n@@@@@@@@@@@@@@@@@@@@\n");
++	printk(KERN_INFO "SPI: s3c64xx_spi_probe ");
++	printk(KERN_INFO "\n@@@@@@@@@@@@@@@@@@@@\n");
+ 	if (pdev->id < 0) {
+ 		dev_err(&pdev->dev,
+ 				"Invalid platform device id-%d\n", pdev->id);
+@@ -1226,6 +1233,7 @@ static struct platform_driver s3c64xx_spi_driver = {
+ 		.owner = THIS_MODULE,
+ 	},
+ 	.remove = s3c64xx_spi_remove,
++	.probe = s3c64xx_spi_probe,
+ 	.suspend = s3c64xx_spi_suspend,
+ 	.resume = s3c64xx_spi_resume,
+ };
+@@ -1233,9 +1241,15 @@ MODULE_ALIAS("platform:s3c64xx-spi");
+ 
+ static int __init s3c64xx_spi_init(void)
+ {
+-	return platform_driver_probe(&s3c64xx_spi_driver, s3c64xx_spi_probe);
++	printk(KERN_INFO "### S3c64xx SPI driver ### \n");
++	if (platform_driver_register(&s3c64xx_spi_driver) != 0) {
++		printk("fail to register platform device\n");
++		return -EPERM;
++	}
++
++	return 0;
+ }
+-subsys_initcall(s3c64xx_spi_init);
++module_init(s3c64xx_spi_init);
+ 
+ static void __exit s3c64xx_spi_exit(void)
+ {
+diff --git a/drivers/staging/iio/accel/Kconfig b/drivers/staging/iio/accel/Kconfig
+index 81a33b6..363e6d0 100755
+--- a/drivers/staging/iio/accel/Kconfig
++++ b/drivers/staging/iio/accel/Kconfig
+@@ -72,6 +72,12 @@ config LIS3L02DQ
+ 	  accelerometer. The driver supplies direct access via sysfs files
+ 	  and an event interface via a character device.
+ 
++config  SPI_EEPROM 
++	tristate "S3c6410 SPI EEPROM"
++	depends on SPI
++	help 
++	  For SPI EEPROM Support!
++
+ choice
+ 	prompt "Buffer type"
+        	depends on LIS3L02DQ && IIO_RING_BUFFER
+diff --git a/drivers/staging/iio/accel/Makefile b/drivers/staging/iio/accel/Makefile
+index 1b2a6d3..766135e 100755
+--- a/drivers/staging/iio/accel/Makefile
++++ b/drivers/staging/iio/accel/Makefile
+@@ -33,3 +33,5 @@ obj-$(CONFIG_LIS3L02DQ)	+= lis3l02dq.o
+ 
+ sca3000-y		:= sca3000_core.o sca3000_ring.o
+ obj-$(CONFIG_SCA3000)	+= sca3000.o
++
++obj-$(CONFIG_SPI_EEPROM) += spi_eeprom.o
+diff --git a/drivers/staging/iio/accel/spi_eeprom.c b/drivers/staging/iio/accel/spi_eeprom.c
+new file mode 100644
+index 0000000..e5d2cb3
+--- /dev/null
++++ b/drivers/staging/iio/accel/spi_eeprom.c
+@@ -0,0 +1,73 @@
++/*
++ * lis3l02dq.c	support STMicroelectronics LISD02DQ
++ *		3d 2g Linear Accelerometers via SPI
++ *
++ * Copyright (c) 2007 Jonathan Cameron <jic23@cam.ac.uk>
++ *
++ * This program is free software; you can redistribute it and/or modify
++ * it under the terms of the GNU General Public License version 2 as
++ * published by the Free Software Foundation.
++ *
++ * Settings:
++ * 16 bit left justified mode used.
++ */
++
++#include <linux/interrupt.h>
++#include <linux/irq.h>
++#include <linux/gpio.h>
++#include <linux/mutex.h>
++#include <linux/device.h>
++#include <linux/kernel.h>
++#include <linux/spi/spi.h>
++#include <linux/slab.h>
++#include <linux/sysfs.h>
++
++static int __devinit spi_eeprom_probe(struct spi_device *spi)
++{
++	unsigned char buf[0x20];
++	u8 cmd[2];
++	int ret;
++	int i;
++
++	printk(KERN_INFO "SPI: EEprom register\n");
++	cmd[0] = 0x03;
++	cmd[1] = 0x0; 
++	ret = spi_write_then_read(spi, cmd, sizeof(cmd), buf, 0x20);
++	if (ret < 0)
++		printk(KERN_INFO "SPI: Spi write/read error\n");
++
++	for (i=0; i<0x20; i++)
++		printk(KERN_INFO "buf[%d] = 0x%x\n", i, buf[i]);
++
++}
++
++/* fixme, confirm ordering in this function */
++static int spi_eeprom_remove(struct spi_device *spi)
++{
++	return 0;
++}
++
++static struct spi_driver spi_eeprom_driver = {
++	.driver = {
++		.name = "spi_eeprom",
++		.owner = THIS_MODULE,
++	},
++	.probe = spi_eeprom_probe,
++	.remove = __devexit_p(spi_eeprom_remove),
++};
++
++static __init int spi_eeprom_init(void)
++{
++	return spi_register_driver(&spi_eeprom_driver);
++}
++module_init(spi_eeprom_init);
++
++static __exit void spi_eeprom_exit(void)
++{
++	spi_unregister_driver(&spi_eeprom_driver);
++}
++module_exit(spi_eeprom_exit);
++
++MODULE_AUTHOR("Jonathan Cameron <jic23@cam.ac.uk>");
++MODULE_DESCRIPTION("ST LIS3L02DQ Accelerometer SPI driver");
++MODULE_LICENSE("GPL v2");
+diff --git a/include/linux/device.h b/include/linux/device.h
+index 8d69d2a..14e8a03 100755
+--- a/include/linux/device.h
++++ b/include/linux/device.h
+@@ -856,7 +856,7 @@ static inline int _dev_info(const struct device *dev, const char *fmt, ...)
+ 
+ #if defined(DEBUG)
+ #define dev_dbg(dev, format, arg...)		\
+-	dev_printk(KERN_DEBUG, dev, format, ##arg)
++	dev_printk(KERN_INFO, dev, format, ##arg)
+ #elif defined(CONFIG_DYNAMIC_DEBUG)
+ #define dev_dbg(dev, format, ...)		     \
+ do {						     \
